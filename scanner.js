@@ -9,12 +9,14 @@ export default function Scanner(domElement) {
 			return domElement.querySelector("#"+CANVAS_ID);
 		},
 		get context(){
-			let context = innerState.canvas.getContext("2d");
-			context.imageSmoothingEnabled = false;
+
 			return context;
 		}
 	}
 
+	let canvas;
+	let context;
+	let interval;
 	let videoTag;
 	let videoStream;
 	let worker;
@@ -35,13 +37,12 @@ export default function Scanner(domElement) {
 			console.log("Caught an error during video track stop process.", err);
 		}
 
-		let canvas = innerState.canvas;
-		if (canvas) {
-			canvas.remove();
+		if (domElement.children.length) {
+			domElement.innerHTML = "";
 		}
 
-		if(innerState.interval){
-			clearInterval(innerState.interval);
+		if(interval){
+			clearInterval(interval);
 		}
 	}
 
@@ -73,8 +74,11 @@ export default function Scanner(domElement) {
 	function internalSetup() {
 		let id = CANVAS_ID;
 		if (!domElement.querySelector("#" + id)) {
-			let canvas = document.createElement("canvas");
+			canvas = document.createElement("canvas");
 			canvas.id = id;
+
+			context = canvas.getContext("2d");
+			context.imageSmoothingEnabled = false;
 
 			canvas.setAttribute("style", "position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);");
 			domElement.append(canvas);
@@ -83,7 +87,7 @@ export default function Scanner(domElement) {
 
 	const getCenterArea = () => {
 		let size = scanAreaSize;
-		let {width, height} = innerState.canvas;
+		let {width, height} = canvas;
 		const points = [(width - size) / 2, (height - size) / 2, size, size];
 		return points;
 	}
@@ -187,9 +191,9 @@ export default function Scanner(domElement) {
 				video.setAttribute("playsinline", "");
 			}
 			video.addEventListener("loadeddata", (...args) => {
-				innerState.canvas.width = video.videoWidth;
-				innerState.canvas.height = video.videoHeight;
-				innerState.interval = setInterval(drawFrame, 30);
+				canvas.width = video.videoWidth;
+				canvas.height = video.videoHeight;
+				interval = setInterval(drawFrame, 30);
 				resolve(true);
 			});
 
@@ -207,20 +211,21 @@ export default function Scanner(domElement) {
 	}
 
 	const getDataForScanning = () => {
-		let frameAsImageData = innerState.context.getImageData(...getCenterArea());
+		let frameAsImageData = context.getImageData(...getCenterArea());
 
 		return frameAsImageData;
 	}
-	const drawCenterArea = () => {
-		innerState.context.lineWidth = 3;
-		innerState.context.strokeStyle = strokeColor;
+
+	const drawCenterArea = (context) => {
+		context.lineWidth = 3;
+		context.strokeStyle = strokeColor;
 		const centerAreaPoints = getCenterArea();
-		innerState.context.strokeRect(...centerAreaPoints);
+		context.strokeRect(...centerAreaPoints);
 	}
 
-	const drawOverlay = () => {
-		let size = scanAreaSize;
-		const {width, height} = innerState.canvas;
+	this.drawOverlay = (centerArea, canvasDimensions) => {
+		let size = centerArea[3];
+		const {width, height} = canvasDimensions;
 
 		const x = (width - size) / 2;
 		const y = (height - size) / 2;
@@ -239,39 +244,48 @@ export default function Scanner(domElement) {
 			{x, y}
 		];
 
-		innerState.context.beginPath();
+		let overlayCanvas = canvas.cloneNode();
+		let context = overlayCanvas.getContext("2d");
 
-		innerState.context.moveTo(backgroundPoints[0].x, backgroundPoints[0].y);
+		domElement.append(overlayCanvas);
+
+		context.beginPath();
+
+		context.moveTo(backgroundPoints[0].x, backgroundPoints[0].y);
 		for (let i = 0; i < 4; i++) {
-			innerState.context.lineTo(backgroundPoints[i].x, backgroundPoints[i].y);
+			context.lineTo(backgroundPoints[i].x, backgroundPoints[i].y);
 		}
 
-		innerState.context.moveTo(holePoints[0].x, holePoints[0].y);
+		context.moveTo(holePoints[0].x, holePoints[0].y);
 		for (let i = 0; i < 4; i++) {
-			innerState.context.lineTo(holePoints[i].x, holePoints[i].y);
+			context.lineTo(holePoints[i].x, holePoints[i].y);
 		}
 
-		innerState.context.closePath();
+		context.closePath();
 
-		innerState.context.fillStyle = 'rgba(0, 0, 0, 0.5)'
-		innerState.context.fill();
+		context.fillStyle = 'rgba(0, 0, 0, 0.5)'
+		context.fill();
+
+		drawCenterArea(context);
 	}
 
+	let overlay;
 	const drawFrame = async () => {
-		//innerState.context.filter = 'brightness(1.75) contrast(1) grayscale(1)';
+		const {width, height} = canvas;
+
+		if(!overlay){
+			this.drawOverlay(getCenterArea(), {width, height});
+			overlay = true;
+		}
+
+		//context.filter = 'brightness(1.75) contrast(1) grayscale(1)';
 		const frame = await grabFrameFromStream();
 		if (!frame) {
 			console.log("Dropping frame");
 			return;
 		}
 
-		const {width, height} = innerState.canvas;
-
-		innerState.context.drawImage(frame, 0, 0, width, height);
-
-		drawOverlay();
-
-		drawCenterArea();
+		context.drawImage(frame, 0, 0, width, height);
 	}
 
 	const grabFrameFromStream = async () => {
