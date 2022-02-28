@@ -295,7 +295,7 @@ export default function Scanner(domElement) {
 
 		//context.filter = 'brightness(1.75) contrast(1) grayscale(1)';
 		if(!frame){
-			await grabFrameFromStream();
+			frame = await grabFrameFromStream();
 		}
 
 		if (!frame) {
