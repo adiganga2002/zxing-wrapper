@@ -1,10 +1,20 @@
 const WORKER_SCRIPT_PATH = "worker/zxing-0.18.6-worker.js";
 const SCAN_AREA_SIZE = 250;
+const CANVAS_ID = "scene";
 
 export default function Scanner(domElement) {
 
-	let canvas;
-	let context;
+	let innerState = {
+		get canvas(){
+			return domElement.querySelector("#"+CANVAS_ID);
+		},
+		get context(){
+			let context = innerState.canvas.getContext("2d");
+			context.imageSmoothingEnabled = false;
+			return context;
+		}
+	}
+
 	let videoTag;
 	let videoStream;
 	let worker;
@@ -16,6 +26,23 @@ export default function Scanner(domElement) {
 	this.setup = async () => {
 		internalSetup();
 		return await connectCamera();
+	}
+
+	this.shutDown = async () =>{
+		try{
+			videoStream.getVideoTracks()[0].stop();
+		}catch(err){
+			console.log("Caught an error during video track stop process.", err);
+		}
+
+		let canvas = innerState.canvas;
+		if (canvas) {
+			canvas.remove();
+		}
+
+		if(innerState.interval){
+			clearInterval(innerState.interval);
+		}
 	}
 
 	this.scan = async () => {
@@ -44,12 +71,10 @@ export default function Scanner(domElement) {
 	}
 
 	function internalSetup() {
-		let id = "scene"
+		let id = CANVAS_ID;
 		if (!domElement.querySelector("#" + id)) {
-			canvas = document.createElement("canvas");
+			let canvas = document.createElement("canvas");
 			canvas.id = id;
-			context = canvas.getContext("2d");
-			context.imageSmoothingEnabled = false;
 
 			canvas.setAttribute("style", "position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);");
 			domElement.append(canvas);
@@ -58,33 +83,43 @@ export default function Scanner(domElement) {
 
 	const getCenterArea = () => {
 		let size = scanAreaSize;
-		let {width, height} = canvas;
+		let {width, height} = innerState.canvas;
 		const points = [(width - size) / 2, (height - size) / 2, size, size];
 		return points;
 	}
 
 	const decode = (imageData) => {
 		let promise = new Promise((resolve, reject) => {
+			let segments = workerPath.split("/");
+			let fileName = segments.pop();
+			let basePath  = segments.join("/")+segments.length > 1 ? "/" : "";
+
 			if (!worker) {
 				worker = new Worker(workerPath);
+				worker.postMessage({
+					type: "init",
+					payload:{
+						basePath
+					}
+				});
 			}
 
 			let waitFor = (message) => {
 				try {
 					//verify message
 					let result;
-					let payload = message.data;
-					let messageType = payload.message;
+					let event = message.data;
+					let messageType = event.type;
 					switch (messageType) {
-						case "failed decoding":
+						case "decode-fail":
 							//console.log("got an message with failed decoding status");
 							break;
-						case "successful decoding":
-							result = payload.data.result;
+						case "decode-success":
+							result = event.payload.result;
 							break;
 						default:
 							console.log("Caught a strange message");
-							result = payload;
+							result = event;
 					}
 
 					worker.removeEventListener("message", waitFor);
@@ -105,9 +140,11 @@ export default function Scanner(domElement) {
 			worker.addEventListener("error", errorHandler);
 
 			worker.postMessage({
-				message: "start decoding",
-				imageData,
-				filterId: ""
+				type: "decode",
+				payload: {
+					imageData,
+					filterId: ""
+				}
 			});
 		});
 
@@ -150,9 +187,9 @@ export default function Scanner(domElement) {
 				video.setAttribute("playsinline", "");
 			}
 			video.addEventListener("loadeddata", (...args) => {
-				canvas.width = video.videoWidth;
-				canvas.height = video.videoHeight;
-				setInterval(drawFrame, 30);
+				innerState.canvas.width = video.videoWidth;
+				innerState.canvas.height = video.videoHeight;
+				innerState.interval = setInterval(drawFrame, 30);
 				resolve(true);
 			});
 
@@ -170,20 +207,20 @@ export default function Scanner(domElement) {
 	}
 
 	const getDataForScanning = () => {
-		let frameAsImageData = context.getImageData(...getCenterArea());
+		let frameAsImageData = innerState.context.getImageData(...getCenterArea());
 
 		return frameAsImageData;
 	}
 	const drawCenterArea = () => {
-		context.lineWidth = 3;
-		context.strokeStyle = strokeColor;
+		innerState.context.lineWidth = 3;
+		innerState.context.strokeStyle = strokeColor;
 		const centerAreaPoints = getCenterArea();
-		context.strokeRect(...centerAreaPoints);
+		innerState.context.strokeRect(...centerAreaPoints);
 	}
 
 	const drawOverlay = () => {
 		let size = scanAreaSize;
-		const {width, height} = canvas;
+		const {width, height} = innerState.canvas;
 
 		const x = (width - size) / 2;
 		const y = (height - size) / 2;
@@ -202,35 +239,35 @@ export default function Scanner(domElement) {
 			{x, y}
 		];
 
-		context.beginPath();
+		innerState.context.beginPath();
 
-		context.moveTo(backgroundPoints[0].x, backgroundPoints[0].y);
+		innerState.context.moveTo(backgroundPoints[0].x, backgroundPoints[0].y);
 		for (let i = 0; i < 4; i++) {
-			context.lineTo(backgroundPoints[i].x, backgroundPoints[i].y);
+			innerState.context.lineTo(backgroundPoints[i].x, backgroundPoints[i].y);
 		}
 
-		context.moveTo(holePoints[0].x, holePoints[0].y);
+		innerState.context.moveTo(holePoints[0].x, holePoints[0].y);
 		for (let i = 0; i < 4; i++) {
-			context.lineTo(holePoints[i].x, holePoints[i].y);
+			innerState.context.lineTo(holePoints[i].x, holePoints[i].y);
 		}
 
-		context.closePath();
+		innerState.context.closePath();
 
-		context.fillStyle = 'rgba(0, 0, 0, 0.5)'
-		context.fill();
+		innerState.context.fillStyle = 'rgba(0, 0, 0, 0.5)'
+		innerState.context.fill();
 	}
 
 	const drawFrame = async () => {
-		//context.filter = 'brightness(1.75) contrast(1) grayscale(1)';
+		//innerState.context.filter = 'brightness(1.75) contrast(1) grayscale(1)';
 		const frame = await grabFrameFromStream();
 		if (!frame) {
 			console.log("Dropping frame");
 			return;
 		}
 
-		const {width, height} = canvas;
+		const {width, height} = innerState.canvas;
 
-		context.drawImage(frame, 0, 0, width, height);
+		innerState.context.drawImage(frame, 0, 0, width, height);
 
 		drawOverlay();
 

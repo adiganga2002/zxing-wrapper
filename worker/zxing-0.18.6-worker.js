@@ -1,16 +1,38 @@
-importScripts("lib/zxing.min.js");
+const TAG = "[Scan Worker]";
 
-const { BrowserMultiFormatReader, MultiFormatReader, HTMLCanvasElementLuminanceSource, BinaryBitmap, BarcodeFormat, DecodeHintType, GlobalHistogramBinarizer, HybridBinarizer} = ZXing;
+addEventListener("message", async (message) => {
+    let event = message.data;
+    switch (event.type){
+        case "init":
+            init(event)
+            break;
+        case "decode":
+            decodeMessage(event);
+            break;
+        default:
+            postMessage({type: "unknown-message"});
+    }
+});
+console.log(TAG, "event listener set up!");
 
-const hints = new Map();
-const formats = [BarcodeFormat.DATA_MATRIX];
+async function init(message){
+    let basePath = message.payload.basePath;
+    await importScripts(basePath+"../lib/zxing.min.js");
 
-hints.set(2, formats);
-hints.set(3, true);
+    console.log(TAG, "ready for requests!");
+}
 
-addEventListener("message", async (e) => {
-    const { filterId, sendImageData } = e.data;
-    let { imageData } = e.data;
+function decodeMessage(message){
+    const { BrowserMultiFormatReader, HTMLCanvasElementLuminanceSource, BinaryBitmap, BarcodeFormat, HybridBinarizer} = ZXing;
+
+    const hints = new Map();
+    const formats = [BarcodeFormat.DATA_MATRIX];
+
+    hints.set(2, formats);
+    hints.set(3, true);
+
+    const { filterId, sendImageData } = message.payload;
+    let { imageData } = message.payload;
 
     const canvasMock = {
         width: imageData.width,
@@ -29,21 +51,24 @@ addEventListener("message", async (e) => {
         }
 
         postMessage({
-            message: "successful decoding",
-            feedback: { filterId, imageData },
-            data: { result },
+            type: "decode-success",
+            payload:{
+                feedback: { filterId, imageData },
+                result
+            }
         });
     } catch (error) {
         if(error.name === "R"){
             postMessage({
-                message: "failed decoding",
-                feedback: { filterId, imageData },
-                error: { message: error.message },
+                type: "decode-fail",
+                payload: {
+                    imageData,
+                    feedback: { filterId, imageData },
+                    error: { message: error.message }
+                }
             });
         }else{
             console.log(error);
         }
     }
-});
-
-console.log("Scan Worker ready!");
+}
