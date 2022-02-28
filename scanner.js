@@ -25,9 +25,11 @@ export default function Scanner(domElement) {
 
 	let strokeColor = "#000000";
 
-	this.setup = async () => {
+	this.setup = async (basic) => {
 		internalSetup();
-		return await connectCamera();
+		if(!basic){
+			return await connectCamera();
+		}
 	}
 
 	this.shutDown = async () =>{
@@ -58,7 +60,20 @@ export default function Scanner(domElement) {
 	}
 
 	this.scanImageData = async (imageData) => {
-		//todo: crop if needed the image....
+		canvas.width = imageData.videoWidth;
+		canvas.height = imageData.videoHeight;
+
+		let tempCanvas = document.createElement("canvas");
+		let tempContext = tempCanvas.getContext("2d");
+		let {width, height} = canvas;
+		tempCanvas.width = width;
+		tempCanvas.height = height;
+
+		tempContext.putImageData(imageData, 0, 0, width, height);
+
+		//give feedback to user
+		await drawFrame(canvas);
+
 		let result = await decode(imageData);
 		return result;
 	}
@@ -270,7 +285,7 @@ export default function Scanner(domElement) {
 	}
 
 	let overlay;
-	const drawFrame = async () => {
+	const drawFrame = async (frame) => {
 		const {width, height} = canvas;
 
 		if(!overlay){
@@ -279,7 +294,10 @@ export default function Scanner(domElement) {
 		}
 
 		//context.filter = 'brightness(1.75) contrast(1) grayscale(1)';
-		const frame = await grabFrameFromStream();
+		if(!frame){
+			await grabFrameFromStream();
+		}
+
 		if (!frame) {
 			console.log("Dropping frame");
 			return;
