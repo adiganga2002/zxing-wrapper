@@ -176,10 +176,12 @@ export default function Scanner(domElement) {
 			context.clearRect(0, 0, canvas.width, canvas.height)
 		}
 
-		try{
-			videoStream.getVideoTracks()[0].stop();
-		}catch(err){
-			console.log("Caught an error during video track stop process.", err);
+		if(videoStream){
+			try{
+				videoStream.getVideoTracks()[0].stop();
+			}catch(err){
+				console.log("Caught an error during video track stop process.", err);
+			}
 		}
 
 		if(interval){
