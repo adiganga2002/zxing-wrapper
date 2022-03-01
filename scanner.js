@@ -4,21 +4,12 @@ const CANVAS_ID = "scene";
 
 export default function Scanner(domElement) {
 
-	let innerState = {
-		get canvas(){
-			return domElement.querySelector("#"+CANVAS_ID);
-		},
-		get context(){
-
-			return context;
-		}
-	}
-
 	let canvas;
 	let context;
 	let interval;
 	let videoTag;
 	let videoStream;
+	let overlay;
 	let worker;
 	let workerPath = WORKER_SCRIPT_PATH;
 	let scanAreaSize = SCAN_AREA_SIZE;
@@ -27,8 +18,9 @@ export default function Scanner(domElement) {
 
 	this.setup = async (basic) => {
 		internalSetup();
-		if(!basic){
-			return await connectCamera();
+
+		if (!basic) {
+			await connectCamera();
 		}
 	}
 
@@ -86,7 +78,79 @@ export default function Scanner(domElement) {
 		scanAreaSize = size;
 	}
 
-	function internalSetup() {
+	this.drawOverlay = (centerArea, canvasDimensions) => {
+		let size = centerArea[3];
+		const {width, height} = canvasDimensions;
+
+		const x = (width - size) / 2;
+		const y = (height - size) / 2;
+
+		const backgroundPoints = [
+			{x: width, y: 0},
+			{x: width, y: height},
+			{x: 0, y: height},
+			{x: 0, y: 0},
+		];
+
+		const holePoints = [
+			{x, y: y + size},
+			{x: x + size, y: y + size},
+			{x: x + size, y},
+			{x, y}
+		];
+
+		let overlayCanvas = canvas.cloneNode();
+		let context = overlayCanvas.getContext("2d");
+
+		domElement.append(overlayCanvas);
+
+		context.beginPath();
+
+		context.moveTo(backgroundPoints[0].x, backgroundPoints[0].y);
+		for (let i = 0; i < 4; i++) {
+			context.lineTo(backgroundPoints[i].x, backgroundPoints[i].y);
+		}
+
+		context.moveTo(holePoints[0].x, holePoints[0].y);
+		for (let i = 0; i < 4; i++) {
+			context.lineTo(holePoints[i].x, holePoints[i].y);
+		}
+
+		context.closePath();
+
+		context.fillStyle = 'rgba(0, 0, 0, 0.5)'
+		context.fill();
+
+		drawCenterArea(context);
+	}
+
+	this.listVideoInputDevices = async () => {
+		if (!window.navigator) {
+			throw new Error("Can't enumerate devices, navigator is not present.");
+		}
+
+		if (!window.navigator.mediaDevices && typeof window.navigator.mediaDevices.enumerateDevices !== 'function') {
+			throw new Error("Can't enumerate devices, method not supported.");
+		}
+
+		const devices = await window.navigator.mediaDevices.enumerateDevices();
+
+		const videoDevices = [];
+		for (const device of devices) {
+			const { kind } = device;
+			if (kind !== 'videoinput') {
+				continue;
+			}
+			const deviceId = device.deviceId;
+			const label = device.label || `Video device ${videoDevices.length + 1}`;
+			const groupId = device.groupId;
+			const videoDevice = { deviceId, label, kind, groupId };
+			videoDevices.push(videoDevice);
+		}
+		return videoDevices;
+	}
+
+	const internalSetup = () => {
 		let id = CANVAS_ID;
 		if (!domElement.querySelector("#" + id)) {
 			canvas = document.createElement("canvas");
@@ -96,6 +160,11 @@ export default function Scanner(domElement) {
 			context.imageSmoothingEnabled = false;
 
 			canvas.setAttribute("style", "position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);");
+
+			domElement.style.position = 'absolute';
+			domElement.style.top = 0;
+			domElement.style.bottom = 0;
+			domElement.style.width = '100%';
 			domElement.append(canvas);
 		}
 	}
@@ -175,14 +244,12 @@ export default function Scanner(domElement) {
 			let stream;
 			let constraints = {
 				audio: false,
-				video: {
-					facingMode: "environment"
-				},
-				advanced: [{focusMode: "continuous"}]
+				video: { facingMode: "environment" },
+				advanced: [{ focusMode: "continuous" }]
 			};
 
 			try {
-				stream = await navigator.mediaDevices.getUserMedia(constraints);
+				stream = await window.navigator.mediaDevices.getUserMedia(constraints);
 				const track = stream.getVideoTracks()[0];
 				const capabilities = track.getCapabilities();
 				console.log(capabilities);
@@ -193,7 +260,7 @@ export default function Scanner(domElement) {
 				await track.applyConstraints(constraints.video);
 			} catch (error) {
 				console.log("Caught an error during camera connection", error);
-				reject();
+				return reject(error);
 			}
 
 			let video = document.createElement('video');
@@ -205,20 +272,20 @@ export default function Scanner(domElement) {
 				video.height = 1;
 				video.setAttribute("playsinline", "");
 			}
-			video.addEventListener("loadeddata", (...args) => {
+			video.addEventListener("loadeddata", () => {
 				canvas.width = video.videoWidth;
 				canvas.height = video.videoHeight;
 				interval = setInterval(drawFrame, 30);
 				resolve(true);
 			});
+			video.addEventListener("error", (e) => reject(e.error));
 
-			video.addEventListener("error", reject);
 			videoTag = video;
-
 			videoStream = stream;
+
 			video.srcObject = stream;
 
-			//enable autoplay video for Safari desktop and mobile
+			// enable autoplay video for Safari desktop and mobile
 			if (!gotFullSupport()) {
 				domElement.append(video);
 			}
@@ -238,53 +305,6 @@ export default function Scanner(domElement) {
 		context.strokeRect(...centerAreaPoints);
 	}
 
-	this.drawOverlay = (centerArea, canvasDimensions) => {
-		let size = centerArea[3];
-		const {width, height} = canvasDimensions;
-
-		const x = (width - size) / 2;
-		const y = (height - size) / 2;
-
-		const backgroundPoints = [
-			{x: width, y: 0},
-			{x: width, y: height},
-			{x: 0, y: height},
-			{x: 0, y: 0},
-		];
-
-		const holePoints = [
-			{x, y: y + size},
-			{x: x + size, y: y + size},
-			{x: x + size, y},
-			{x, y}
-		];
-
-		let overlayCanvas = canvas.cloneNode();
-		let context = overlayCanvas.getContext("2d");
-
-		domElement.append(overlayCanvas);
-
-		context.beginPath();
-
-		context.moveTo(backgroundPoints[0].x, backgroundPoints[0].y);
-		for (let i = 0; i < 4; i++) {
-			context.lineTo(backgroundPoints[i].x, backgroundPoints[i].y);
-		}
-
-		context.moveTo(holePoints[0].x, holePoints[0].y);
-		for (let i = 0; i < 4; i++) {
-			context.lineTo(holePoints[i].x, holePoints[i].y);
-		}
-
-		context.closePath();
-
-		context.fillStyle = 'rgba(0, 0, 0, 0.5)'
-		context.fill();
-
-		drawCenterArea(context);
-	}
-
-	let overlay;
 	const drawFrame = async (frame) => {
 		const {width, height} = canvas;
 
