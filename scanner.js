@@ -52,8 +52,8 @@ export default function Scanner(domElement) {
 	}
 
 	this.scanImageData = async (imageData) => {
-		canvas.width = imageData.videoWidth;
-		canvas.height = imageData.videoHeight;
+		canvas.width = imageData.width;
+		canvas.height = imageData.height;
 
 		let tempCanvas = document.createElement("canvas");
 		let tempContext = tempCanvas.getContext("2d");
@@ -61,13 +61,23 @@ export default function Scanner(domElement) {
 		tempCanvas.width = width;
 		tempCanvas.height = height;
 
-		tempContext.putImageData(imageData, 0, 0, width, height);
+		tempContext.putImageData(imageData, 0, 0);
 
 		//give feedback to user
-		await drawFrame(canvas);
+		await drawFrame(tempCanvas);
 
-		let result = await decode(imageData);
-		return result;
+		//scan every 10 frame for any codes
+		//this is a temporary fix until ios wrapper will be fixed
+		//there are some threads that are shutting down random
+		if (!this.scanCounter) {
+			this.scanCounter = 10;
+		}
+		this.scanCounter--;
+		if (this.scanCounter === 0) {
+			this.scanCounter = undefined;
+			return await decode(imageData);
+		}
+
 	}
 
 	this.changeWorker = (path) => {
