@@ -13,30 +13,36 @@ export default function Scanner(domElement) {
 	let worker;
 	let workerPath = WORKER_SCRIPT_PATH;
 	let scanAreaSize = SCAN_AREA_SIZE;
+	let facingMode = "environment";
 
 	let strokeColor = "#000000";
 
-	this.setup = async (basic) => {
+	this.setup = async (options = {}) => {
+		if (!options) {
+			options = {};
+		}
+		if ((["environment", "user"].includes(options.facingMode))) {
+			facingMode = options.facingMode;
+		}
+		if (typeof options.useBasicSetup !== 'boolean') {
+			options.useBasicSetup = true;
+		}
+
+		reset();
 		internalSetup();
 
-		if (!basic) {
+		if (!options.useBasicSetup) {
 			await connectCamera();
 		}
 	}
 
 	this.shutDown = async () =>{
-		try{
-			videoStream.getVideoTracks()[0].stop();
-		}catch(err){
-			console.log("Caught an error during video track stop process.", err);
-		}
+		reset();
 
 		if (domElement.children.length) {
-			domElement.innerHTML = "";
-		}
-
-		if(interval){
-			clearInterval(interval);
+			setTimeout(() => {
+				domElement.innerHTML = "";
+			}, 500)
 		}
 	}
 
@@ -112,8 +118,6 @@ export default function Scanner(domElement) {
 		let overlayCanvas = canvas.cloneNode();
 		let context = overlayCanvas.getContext("2d");
 
-		domElement.append(overlayCanvas);
-
 		context.beginPath();
 
 		context.moveTo(backgroundPoints[0].x, backgroundPoints[0].y);
@@ -132,6 +136,8 @@ export default function Scanner(domElement) {
 		context.fill();
 
 		drawCenterArea(context);
+
+		return overlayCanvas;
 	}
 
 	this.listVideoInputDevices = async () => {
@@ -158,6 +164,27 @@ export default function Scanner(domElement) {
 			videoDevices.push(videoDevice);
 		}
 		return videoDevices;
+	}
+
+	const reset = () => {
+		if (overlay) {
+			overlay.remove();
+			overlay = null;
+		}
+
+		if (context && context) {
+			context.clearRect(0, 0, canvas.width, canvas.height)
+		}
+
+		try{
+			videoStream.getVideoTracks()[0].stop();
+		}catch(err){
+			console.log("Caught an error during video track stop process.", err);
+		}
+
+		if(interval){
+			clearInterval(interval);
+		}
 	}
 
 	const internalSetup = () => {
@@ -254,7 +281,7 @@ export default function Scanner(domElement) {
 			let stream;
 			let constraints = {
 				audio: false,
-				video: { facingMode: "environment" },
+				video: { facingMode },
 				advanced: [{ focusMode: "continuous" }]
 			};
 
@@ -318,9 +345,9 @@ export default function Scanner(domElement) {
 	const drawFrame = async (frame) => {
 		const {width, height} = canvas;
 
-		if(!overlay){
-			this.drawOverlay(getCenterArea(), {width, height});
-			overlay = true;
+		if (!overlay) {
+			overlay = this.drawOverlay(getCenterArea(), {width, height});
+			domElement.append(overlay || null);
 		}
 
 		//context.filter = 'brightness(1.75) contrast(1) grayscale(1)';
