@@ -81,9 +81,8 @@ export default function Scanner(domElement) {
 		this.scanCounter--;
 		if (this.scanCounter === 0) {
 			this.scanCounter = undefined;
-			return await decode(imageData);
+			return await decode(getDataForScanning());
 		}
-
 	}
 
 	this.changeWorker = (path) => {
