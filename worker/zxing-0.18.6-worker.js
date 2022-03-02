@@ -57,14 +57,22 @@ function diggestMessageForDecode(message) {
 
 	try {
         let result;
+        let lastError;
 
 		for (let index in self.filters) {
 			const filter = getFilter(self.filters[index]);
             let imageDataClone = cloneImageData(imageData);
 			if (typeof filter === "function") {
-				let newImageData = filter({imageDataClone});
-                result = decode(newImageData || imageDataClone);
-                if(result){
+				let newImageData = filter({ imageData: imageDataClone });
+
+				try {
+					result = decode(newImageData || imageDataClone);
+				} catch (error) {
+					lastError = error;
+					continue;
+				}
+
+                if (result) {
                     break;
                 }
 			}
@@ -72,6 +80,10 @@ function diggestMessageForDecode(message) {
 
 		if (!sendImageData) {
 			imageData = [];
+		}
+
+		if (!result) {
+			throw lastError;
 		}
 
 		postMessage({

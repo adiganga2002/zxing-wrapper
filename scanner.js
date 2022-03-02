@@ -40,9 +40,7 @@ export default function Scanner(domElement, testMode) {
 		reset();
 
 		if (domElement.children.length) {
-			setTimeout(() => {
-				domElement.innerHTML = "";
-			}, 500)
+			domElement.innerHTML = "";
 		}
 	}
 
