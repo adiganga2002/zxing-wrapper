@@ -2,7 +2,7 @@ const WORKER_SCRIPT_PATH = "worker/zxing-0.18.6-worker.js";
 const SCAN_AREA_SIZE = 250;
 const CANVAS_ID = "scene";
 
-export default function Scanner(domElement) {
+export default function Scanner(domElement, testMode) {
 
 	let canvas;
 	let context;
@@ -332,6 +332,11 @@ export default function Scanner(domElement) {
 
 	const getDataForScanning = () => {
 		let frameAsImageData = context.getImageData(...getCenterArea());
+
+		if(testMode){
+			this.lastScanInput = frameAsImageData;
+			this.lastFrame = context.getImageData(0, 0, canvas.width, canvas.height);
+		}
 
 		return frameAsImageData;
 	}
