@@ -39,6 +39,10 @@ export default function Scanner(domElement, testMode) {
 	this.shutDown = async () =>{
 		reset();
 
+		if (worker) {
+			worker.terminate();
+		}
+
 		if (domElement.children.length) {
 			domElement.innerHTML = "";
 		}
@@ -216,7 +220,7 @@ export default function Scanner(domElement, testMode) {
 		let promise = new Promise((resolve, reject) => {
 			let segments = workerPath.split("/");
 			let fileName = segments.pop();
-			let basePath  = segments.join("/")+segments.length > 1 ? "/" : "";
+			let basePath = segments.join("/")+segments.length > 1 ? "/" : "";
 
 			if (!worker) {
 				worker = new Worker(workerPath);
