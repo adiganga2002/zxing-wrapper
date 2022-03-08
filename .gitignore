@@ -1,2 +1,6 @@
 .idea/
 .vscode/
+
+# commit only the minified version
+/lib/zxing.js
+/lib/zxing.js.map

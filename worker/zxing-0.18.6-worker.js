@@ -94,7 +94,7 @@ function diggestMessageForDecode(message) {
 			}
 		});
 	} catch (error) {
-		if (error.name === "R") {
+		if (error.name === "R" || error.name === "NotFoundException") {
 			postMessage({
 				type: "decode-fail",
 				payload: {

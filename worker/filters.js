@@ -15,10 +15,10 @@ function invert(image) {
  */
 function threshold(image, threshold) {
 	for (let i = 0; i < image.data.length; i += 4) {
-		// 4 is for RGBA channels
-
-		// R = G = B = R > T ? 255 : 0
-		image.data[i] = image.data[i + 1] = image.data[i + 2] = image.data[i + 1] > threshold ? 255 : 0;
+		let value = image.data[i + 1] >= threshold ? 255 : 0
+		image.data[i] = value;
+		image.data[i + 1] = value;
+		image.data[i + 2] = value;
 	}
 }
 
@@ -141,15 +141,3 @@ const getFilter = (id) => {
 
 self.getFilter = getFilter;
 self.filters = ["default", "defaultInverted", "otsuThresholding", "otsuThresholdingInverted"];
-
-
-/**
- * TODO:
- * imageData[3] alpha?
- *
- * TODO:
- * zoom 1.5, 2, 3?
- * x y w h
- *
- *
- */
