@@ -151,30 +151,10 @@ export default function Scanner(domElement, testMode) {
 		return overlayCanvas;
 	}
 
-	this.listVideoInputDevices = async () => {
-		if (!window.navigator) {
-			throw new Error("Can't enumerate devices, navigator is not present.");
-		}
-
-		if (!window.navigator.mediaDevices && typeof window.navigator.mediaDevices.enumerateDevices !== 'function') {
-			throw new Error("Can't enumerate devices, method not supported.");
-		}
-
-		const devices = await window.navigator.mediaDevices.enumerateDevices();
-
-		const videoDevices = [];
-		for (const device of devices) {
-			const { kind } = device;
-			if (kind !== 'videoinput') {
-				continue;
-			}
-			const deviceId = device.deviceId;
-			const label = device.label || `Video device ${videoDevices.length + 1}`;
-			const groupId = device.groupId;
-			const videoDevice = { deviceId, label, kind, groupId };
-			videoDevices.push(videoDevice);
-		}
-		return videoDevices;
+	this.getCenterArea = (canvasDimensions) => {
+		let size = scanAreaSize;
+		let { width, height } = canvasDimensions;
+		return [(width - size) / 2, (height - size) / 2, size, size];
 	}
 
 	const reset = () => {
@@ -202,6 +182,7 @@ export default function Scanner(domElement, testMode) {
 
 	const internalSetup = () => {
 		let id = CANVAS_ID;
+
 		if (!domElement.querySelector("#" + id)) {
 			canvas = document.createElement("canvas");
 			canvas.id = id;
@@ -217,13 +198,13 @@ export default function Scanner(domElement, testMode) {
 			domElement.style.width = '100%';
 			domElement.append(canvas);
 		}
-	}
 
-	const getCenterArea = () => {
-		let size = scanAreaSize;
-		let {width, height} = canvas;
-		const points = [(width - size) / 2, (height - size) / 2, size, size];
-		return points;
+		if (!canvas) {
+			canvas = domElement.querySelector('#' + id);
+
+			context = canvas.getContext("2d");
+			context.imageSmoothingEnabled = false;
+		}
 	}
 
 	const decode = (imageData) => {
@@ -346,9 +327,10 @@ export default function Scanner(domElement, testMode) {
 	}
 
 	const getDataForScanning = () => {
-		let frameAsImageData = context.getImageData(...getCenterArea());
+		let centralArea = this.getCenterArea({ width: canvas.width, height: canvas.height });
+		let frameAsImageData = context.getImageData(...centralArea);
 
-		if(testMode){
+		if (testMode) {
 			this.lastScanInput = frameAsImageData;
 			this.lastFrame = context.getImageData(0, 0, canvas.width, canvas.height);
 		}
@@ -357,22 +339,23 @@ export default function Scanner(domElement, testMode) {
 	}
 
 	const drawCenterArea = (context) => {
+		let centralArea = this.getCenterArea(canvas);
+
 		context.lineWidth = 3;
 		context.strokeStyle = strokeColor;
-		const centerAreaPoints = getCenterArea();
-		context.strokeRect(...centerAreaPoints);
+		context.strokeRect(...centralArea);
 	}
 
 	const drawFrame = async (frame) => {
-		const {width, height} = canvas;
+		const { width, height } = canvas;
 
 		if (!overlay) {
-			overlay = this.drawOverlay(getCenterArea(), {width, height});
-			domElement.append(overlay || null);
+			let centralArea = this.getCenterArea(canvas);
+			overlay = this.drawOverlay(centralArea, canvas);
+			overlay && domElement.append(overlay);
 		}
 
-		//context.filter = 'brightness(1.75) contrast(1) grayscale(1)';
-		if(!frame){
+		if (!frame) {
 			frame = await grabFrameFromStream();
 		}
 
