@@ -102,7 +102,7 @@ const filters = {
 	}
 };
 
-self.cloneImageData = function (imageData) {
+function cloneImageData(imageData) {
 	let copy = {
 		data: Uint8ClampedArray.from(imageData.data),
 		width: imageData.width,
@@ -139,5 +139,6 @@ const getFilter = (id) => {
 	};
 };
 
+self.cloneImageData = cloneImageData;
 self.getFilter = getFilter;
 self.filters = ["default", "defaultInverted", "otsuThresholding", "otsuThresholdingInverted"];

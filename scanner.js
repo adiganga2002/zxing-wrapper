@@ -1,34 +1,42 @@
-const WORKER_SCRIPT_PATH = "worker/zxing-0.18.6-worker.js";
-const SCAN_AREA_SIZE = 250;
-const FRAME_RATE = 30;
+const TAG = "[Scanner]";
 const CANVAS_ID = "scene";
+const FRAME_RATE = 30;
+const WORKER_SCRIPT_PATH = "worker/zxing-0.18.6-worker.js";
 
-async function timeout(time = 0) {
-	return new Promise((resolve) => {
-		const id = setTimeout(() => {
-			clearTimeout(id)
-			resolve();
-		}, time)
-	});
+/**
+ * @typedef {number} ScannerFormats
+ * @enum {ScannerFormats}
+ */
+const SCANNER_FORMATS = {
+	UNKNOWN: 0,
+	DATA_MATRIX: 1, // Europe
+	GS1_DATABAR_LIMITED_COMPOSITE: 2 // Japan
 }
 
-export default function Scanner(domElement, testMode) {
-
-	let canvas;
-	let context;
-	let videoTag;
-	let videoStream;
+/**
+ * @param {HTMLElement} domElement
+ * @param {{ [format]: ScannerFormats, [isTestingMode]: boolean }} [options]
+ * @constructor
+ */
+function Scanner(domElement, options) {
+	let canvas, context;
+	let videoElement, videoStream;
 	let overlay;
 	let worker;
 	let workerPath = WORKER_SCRIPT_PATH;
-	let scanAreaSize = SCAN_AREA_SIZE;
 	let facingMode = "environment";
-	let isRecursiveDrawingActive = false;
+	let scannerFormat = SCANNER_FORMATS.DATA_MATRIX;
+	let isDrawingLoopActive = false;
+	let isTestingMode = false;
 
-	let strokeColor = "#000000";
+	// public methods
 
-	this.setup = async (options = {}) => {
-		if (!options) {
+	/**
+	 * @param {{ [facingMode]: "environment" | "user", [useBasicSetup]: boolean }} [options]
+	 * @return {Promise<void>}
+	 */
+	this.setup = async (options) => {
+		if (typeof options !== 'object') {
 			options = {};
 		}
 		if ((["environment", "user"].includes(options.facingMode))) {
@@ -46,7 +54,10 @@ export default function Scanner(domElement, testMode) {
 		}
 	}
 
-	this.shutDown = async () =>{
+	/**
+	 * @return {void}
+	 */
+	this.shutDown = () => {
 		reset();
 
 		if (worker) {
@@ -58,18 +69,278 @@ export default function Scanner(domElement, testMode) {
 		}
 	}
 
-	this.scan = async () => {
-		let frame = getDataForScanning();
-		let result = await decode(frame);
-		if (result) {
-			strokeColor = "#008000";
-		}else{
-			strokeColor = "#000000";
+	/**
+	 * @param {ImageData} [imageData]
+	 * @return {Promise<Result | undefined>}
+	 */
+	this.scan = async (imageData) => {
+		if (imageData instanceof ImageData) {
+			return await scanFromImageData(imageData);
 		}
-		return result;
+
+		return await scanFromStream();
 	}
 
-	this.scanImageData = async (imageData) => {
+	/**
+	 * @param {string} path
+	 * @return {void}
+	 */
+	this.changeWorkerScript = (path) => {
+		workerPath = path;
+	}
+
+	/**
+	 * @param {{ width: number, height: number }} canvasDimensions
+	 * @return {number[]} meaning [x, y, width, height]
+	 */
+	this.getScanningArea = (canvasDimensions) => {
+		let scannerDimensions = getDefaultScannerDimensions(scannerFormat, canvasDimensions);
+		return [
+			(canvasDimensions.width - scannerDimensions.width) / 2,
+			(canvasDimensions.height - scannerDimensions.height) / 2,
+			scannerDimensions.width,
+			scannerDimensions.height
+		];
+	}
+
+	/**
+	 * @param {{ width: number, height: number }} canvasDimensions
+	 * @param {number[]} scannerArea
+	 * @return {HTMLCanvasElement}
+	 */
+	this.drawOverlay = (canvasDimensions, scannerArea) => {
+		return getDefaultScannerOverlay(scannerFormat, scannerArea, canvasDimensions);
+	}
+
+	// private methods
+
+	const applyOptions = (options) => {
+		if (typeof options !== 'object') {
+			options = {};
+		}
+		if (Object.values(SCANNER_FORMATS).includes(options.format)) {
+			scannerFormat = options.format;
+		}
+		if (typeof options.isTestingMode === 'boolean') {
+			isTestingMode = options.isTestingMode;
+		}
+	}
+
+	const reset = () => {
+		if (overlay) {
+			overlay.remove();
+			overlay = null;
+		}
+
+		if (context && context) {
+			context.clearRect(0, 0, canvas.width, canvas.height)
+		}
+
+		if (videoStream) {
+			try {
+				videoStream.getVideoTracks()[0].stop();
+			} catch (err) {
+				console.log(TAG, "Caught an error during video track stop process.", err);
+			}
+		}
+
+		if (isDrawingLoopActive) {
+			isDrawingLoopActive = false;
+		}
+	}
+
+	const internalSetup = () => {
+		let id = CANVAS_ID;
+
+		if (!domElement.querySelector("#" + id)) {
+			canvas = document.createElement("canvas");
+			canvas.id = id;
+			canvas.style.position = 'absolute';
+			canvas.style.top = '50%';
+			canvas.style.left = '50%';
+			canvas.style.transform = 'translate(-50%, -50%)';
+
+			domElement.style.position = 'absolute';
+			domElement.style.top = 0;
+			domElement.style.bottom = 0;
+			domElement.style.width = '100%';
+
+			domElement.append(canvas);
+		} else {
+			canvas = domElement.querySelector('#' + id);
+		}
+
+		if (canvas) {
+			context = canvas.getContext("2d");
+			context.imageSmoothingEnabled = false;
+		}
+	}
+
+	const decode = (imageData) => {
+		return new Promise((resolve, reject) => {
+			let segments = workerPath.split("/");
+			segments.pop();
+			let basePath = segments.join("/")+segments.length > 1 ? "/" : "";
+
+			if (!worker) {
+				worker = new Worker(workerPath);
+				worker.postMessage({
+					type: "init",
+					payload:{
+						basePath
+					}
+				});
+			}
+
+			let waitFor = (message) => {
+				try {
+					let result;
+					let event = message.data;
+					let messageType = event.type;
+					switch (messageType) {
+						case "decode-fail":
+							break;
+						case "decode-success":
+							result = event.payload.result;
+							break;
+						default:
+							console.log(TAG, "Caught a strange message");
+							result = event;
+					}
+
+					worker.removeEventListener("message", waitFor);
+					worker.removeEventListener("error", errorHandler);
+					resolve(result);
+				} catch (err) {
+					console.log(TAG, err);
+				}
+			}
+
+			let errorHandler = (...args) => {
+				worker = undefined;
+				reject(...args);
+			};
+
+			worker.addEventListener("message", waitFor);
+
+			worker.addEventListener("error", errorHandler);
+
+			worker.postMessage({
+				type: "decode",
+				payload: {
+					scannerFormat,
+					imageData,
+					filterId: ""
+				}
+			});
+		});
+	}
+
+	const connectCamera = async () => {
+		return new Promise(async (resolve, reject) => {
+			let stream;
+			let constraints = {
+				audio: false,
+				video: { facingMode },
+				advanced: [{ focusMode: "continuous" }]
+			};
+
+			try {
+				stream = await window.navigator.mediaDevices.getUserMedia(constraints);
+				const track = stream.getVideoTracks()[0];
+				const capabilities = track.getCapabilities();
+				console.log(TAG, "Camera capabilities", capabilities);
+
+				constraints.video.height = 1080;
+				constraints.video.width = 1920;
+
+				await track.applyConstraints(constraints.video);
+			} catch (error) {
+				console.log(TAG, "Caught an error during camera connection", error);
+				return reject(error);
+			}
+
+			let video = document.createElement('video');
+			video.autoplay = true;
+			video.muted = true;
+			video.loop = true;
+			if (!gotFullSupport()) {
+				video.width = 1;
+				video.height = 1;
+				video.setAttribute("playsinline", "");
+			}
+			video.addEventListener("loadeddata", () => {
+				canvas.width = video.videoWidth;
+				canvas.height = video.videoHeight;
+
+				isDrawingLoopActive = true;
+				startDrawingLoop();
+
+				resolve(true);
+			});
+			video.addEventListener("error", (e) => reject(e.error));
+
+			videoElement = video;
+			videoStream = stream;
+
+			video.srcObject = stream;
+
+			// enable autoplay video for Safari desktop and mobile
+			if (!gotFullSupport()) {
+				domElement.append(video);
+			}
+		});
+	}
+
+	const getDataForScanning = () => {
+		let centralArea = this.getScanningArea(canvas);
+		let frameAsImageData = context.getImageData(...centralArea);
+
+		if (isTestingMode) {
+			this.lastScanInput = frameAsImageData;
+			this.lastFrame = context.getImageData(0, 0, canvas.width, canvas.height);
+		}
+
+		return frameAsImageData;
+	}
+	
+	const gotFullSupport = () => {
+		return !!window.ImageCapture;
+	}
+	
+	const grabFrameFromStream = async () => {
+		if (!gotFullSupport()) {
+			return grabFrameAlternative();
+		}
+
+		let frame;
+		try {
+			const track = videoStream.getVideoTracks()[0];
+			const imageCapture = new ImageCapture(track);
+			frame = await imageCapture.grabFrame();
+		} catch (err) {
+			console.log(TAG, "Got a situation during grabFrame from stream process.", err);
+		}
+		return frame;
+	}
+
+	const grabFrameAlternative = () => {
+		let tempCanvas = document.createElement("canvas");
+		let tempContext = tempCanvas.getContext("2d");
+		let {width, height} = canvas;
+		tempCanvas.width = width;
+		tempCanvas.height = height;
+
+		tempContext.drawImage(videoElement, 0, 0, width, height);
+		return tempCanvas;
+	}
+
+	const scanFromStream = async () => {
+		let frame = getDataForScanning();
+		return await decode(frame);
+	}
+
+	const scanFromImageData = async (imageData) => {
 		canvas.width = imageData.width;
 		canvas.height = imageData.height;
 
@@ -97,261 +368,12 @@ export default function Scanner(domElement, testMode) {
 		}
 	}
 
-	this.changeWorker = (path) => {
-		workerPath = path;
-	}
-
-	this.setScanAreaSize = (size) => {
-		scanAreaSize = size;
-	}
-
-	this.drawOverlay = (centerArea, canvasDimensions) => {
-		let size = centerArea[3];
-		const {width, height} = canvasDimensions;
-
-		const x = (width - size) / 2;
-		const y = (height - size) / 2;
-
-		const backgroundPoints = [
-			{x: width, y: 0},
-			{x: width, y: height},
-			{x: 0, y: height},
-			{x: 0, y: 0},
-		];
-
-		const holePoints = [
-			{x, y: y + size},
-			{x: x + size, y: y + size},
-			{x: x + size, y},
-			{x, y}
-		];
-
-		let overlayCanvas = canvas.cloneNode();
-		let context = overlayCanvas.getContext("2d");
-
-		context.beginPath();
-
-		context.moveTo(backgroundPoints[0].x, backgroundPoints[0].y);
-		for (let i = 0; i < 4; i++) {
-			context.lineTo(backgroundPoints[i].x, backgroundPoints[i].y);
-		}
-
-		context.moveTo(holePoints[0].x, holePoints[0].y);
-		for (let i = 0; i < 4; i++) {
-			context.lineTo(holePoints[i].x, holePoints[i].y);
-		}
-
-		context.closePath();
-
-		context.fillStyle = 'rgba(0, 0, 0, 0.5)'
-		context.fill();
-
-		drawCenterArea(context);
-
-		return overlayCanvas;
-	}
-
-	this.getCenterArea = (canvasDimensions) => {
-		let size = scanAreaSize;
-		let { width, height } = canvasDimensions;
-		return [(width - size) / 2, (height - size) / 2, size, size];
-	}
-
-	const reset = () => {
-		if (overlay) {
-			overlay.remove();
-			overlay = null;
-		}
-
-		if (context && context) {
-			context.clearRect(0, 0, canvas.width, canvas.height)
-		}
-
-		if(videoStream){
-			try{
-				videoStream.getVideoTracks()[0].stop();
-			}catch(err){
-				console.log("Caught an error during video track stop process.", err);
-			}
-		}
-
-		if (isRecursiveDrawingActive) {
-			isRecursiveDrawingActive = false;
-		}
-	}
-
-	const internalSetup = () => {
-		let id = CANVAS_ID;
-
-		if (!domElement.querySelector("#" + id)) {
-			canvas = document.createElement("canvas");
-			canvas.id = id;
-
-			context = canvas.getContext("2d");
-			context.imageSmoothingEnabled = false;
-
-			canvas.setAttribute("style", "position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);");
-
-			domElement.style.position = 'absolute';
-			domElement.style.top = 0;
-			domElement.style.bottom = 0;
-			domElement.style.width = '100%';
-			domElement.append(canvas);
-		}
-
-		if (!canvas) {
-			canvas = domElement.querySelector('#' + id);
-
-			context = canvas.getContext("2d");
-			context.imageSmoothingEnabled = false;
-		}
-	}
-
-	const decode = (imageData) => {
-		let promise = new Promise((resolve, reject) => {
-			let segments = workerPath.split("/");
-			let fileName = segments.pop();
-			let basePath = segments.join("/")+segments.length > 1 ? "/" : "";
-
-			if (!worker) {
-				worker = new Worker(workerPath);
-				worker.postMessage({
-					type: "init",
-					payload:{
-						basePath
-					}
-				});
-			}
-
-			let waitFor = (message) => {
-				try {
-					//verify message
-					let result;
-					let event = message.data;
-					let messageType = event.type;
-					switch (messageType) {
-						case "decode-fail":
-							//console.log("got an message with failed decoding status");
-							break;
-						case "decode-success":
-							result = event.payload.result;
-							break;
-						default:
-							console.log("Caught a strange message");
-							result = event;
-					}
-
-					worker.removeEventListener("message", waitFor);
-					worker.removeEventListener("error", errorHandler);
-					resolve(result);
-				} catch (err) {
-					console.log(err);
-				}
-			}
-
-			let errorHandler = (...args) => {
-				worker = undefined;
-				reject(...args);
-			};
-
-			worker.addEventListener("message", waitFor);
-
-			worker.addEventListener("error", errorHandler);
-
-			worker.postMessage({
-				type: "decode",
-				payload: {
-					imageData,
-					filterId: ""
-				}
-			});
-		});
-
-		return promise;
-	}
-
-	const connectCamera = async () => {
-		return new Promise(async (resolve, reject) => {
-			let stream;
-			let constraints = {
-				audio: false,
-				video: { facingMode },
-				advanced: [{ focusMode: "continuous" }]
-			};
-
-			try {
-				stream = await window.navigator.mediaDevices.getUserMedia(constraints);
-				const track = stream.getVideoTracks()[0];
-				const capabilities = track.getCapabilities();
-				console.log(capabilities);
-
-				constraints.video.height = 1080;
-				constraints.video.width = 1920;
-
-				await track.applyConstraints(constraints.video);
-			} catch (error) {
-				console.log("Caught an error during camera connection", error);
-				return reject(error);
-			}
-
-			let video = document.createElement('video');
-			video.autoplay = true;
-			video.muted = true;
-			video.loop = true;
-			if (!gotFullSupport()) {
-				video.width = 1;
-				video.height = 1;
-				video.setAttribute("playsinline", "");
-			}
-			video.addEventListener("loadeddata", () => {
-				canvas.width = video.videoWidth;
-				canvas.height = video.videoHeight;
-
-				isRecursiveDrawingActive = true;
-				drawFrameRecursive();
-
-				resolve(true);
-			});
-			video.addEventListener("error", (e) => reject(e.error));
-
-			videoTag = video;
-			videoStream = stream;
-
-			video.srcObject = stream;
-
-			// enable autoplay video for Safari desktop and mobile
-			if (!gotFullSupport()) {
-				domElement.append(video);
-			}
-		});
-	}
-
-	const getDataForScanning = () => {
-		let centralArea = this.getCenterArea({ width: canvas.width, height: canvas.height });
-		let frameAsImageData = context.getImageData(...centralArea);
-
-		if (testMode) {
-			this.lastScanInput = frameAsImageData;
-			this.lastFrame = context.getImageData(0, 0, canvas.width, canvas.height);
-		}
-
-		return frameAsImageData;
-	}
-
-	const drawCenterArea = (context) => {
-		let centralArea = this.getCenterArea(canvas);
-
-		context.lineWidth = 3;
-		context.strokeStyle = strokeColor;
-		context.strokeRect(...centralArea);
-	}
-
 	const drawFrame = async (frame) => {
 		const { width, height } = canvas;
 
 		if (!overlay) {
-			let centralArea = this.getCenterArea(canvas);
-			overlay = this.drawOverlay(centralArea, canvas);
+			let scannerArea = this.getScanningArea(canvas);
+			overlay = this.drawOverlay(canvas, scannerArea);
 			overlay && domElement.append(overlay);
 		}
 
@@ -360,15 +382,15 @@ export default function Scanner(domElement, testMode) {
 		}
 
 		if (!frame) {
-			console.log("Dropping frame");
+			console.log(TAG, "Dropping frame");
 			return;
 		}
 
 		context.drawImage(frame, 0, 0, width, height);
 	}
 
-	const drawFrameRecursive = async () => {
-		if (isRecursiveDrawingActive) {
+	const startDrawingLoop = async () => {
+		if (isDrawingLoopActive) {
 			const startDrawing = Date.now();
 
 			await drawFrame();
@@ -381,39 +403,105 @@ export default function Scanner(domElement, testMode) {
 				await timeout(sleepTime);
 			}
 
-			await drawFrameRecursive();
+			await startDrawingLoop();
 		}
 	}
 
-	const grabFrameFromStream = async () => {
-		if (!gotFullSupport()) {
-			return grabFrameAlternative();
-		}
+	// legacy
 
-		let frame;
-		try {
-			const track = videoStream.getVideoTracks()[0];
-			const imageCapture = new ImageCapture(track);
-			frame = await imageCapture.grabFrame();
-		} catch (err) {
-			console.log("Got a situation during grabFrame from stream process.", err);
-		}
-		return frame;
+	/**
+	 * @deprecated
+	 */
+	this.changeWorker = (path) => {
+		console.log(TAG, 'method changeWorker is deprecated, use changeWorkerScript instead!');
+		this.changeWorkerScript(path)
 	}
 
-	const gotFullSupport = () => {
-		return !!window.ImageCapture;
-		//return false;
+	/**
+	 * @deprecated
+	 */
+	this.scanImageData = async (imageData) => {
+		console.log(TAG, 'method scanImageData is deprecated, use scan instead!');
+		return await scanFromImageData(imageData);
 	}
 
-	const grabFrameAlternative = () => {
-		let tempCanvas = document.createElement("canvas");
-		let tempContext = tempCanvas.getContext("2d");
-		let {width, height} = canvas;
-		tempCanvas.width = width;
-		tempCanvas.height = height;
+	// main
 
-		tempContext.drawImage(videoTag, 0, 0, width, height);
-		return tempCanvas;
+	applyOptions(options);
+}
+
+function getDefaultScannerDimensions(scannerFormat, canvasDimensions) {
+	switch (scannerFormat) {
+		case SCANNER_FORMATS.DATA_MATRIX:
+			return { width: 250, height: 250 };
+		case SCANNER_FORMATS.GS1_DATABAR_LIMITED_COMPOSITE:
+			return { width: canvasDimensions.width, height: 250 };
+		default:
+			return { width: canvasDimensions.width, height: canvasDimensions.height };
 	}
 }
+
+function getDefaultScannerOverlay(scannerFormat, scannerArea, canvasDimensions) {
+	const scanerDimensions = {
+		width: scannerArea[2],
+		height: scannerArea[3]
+	};
+
+	const x = (canvasDimensions.width - size) / 2;
+	const y = (canvasDimensions.height - size) / 2;
+
+	const backgroundPoints = [
+		{ x: canvasDimensions.width, y: 0 },
+		{ x: canvasDimensions.width, y: canvasDimensions.height },
+		{ x: 0, y: canvasDimensions.height },
+		{ x: 0, y: 0 },
+	];
+
+	const holePoints = [
+		{ x, y: y + scanerDimensions.height },
+		{ x: x + scanerDimensions.width, y: y + scanerDimensions.height },
+		{ x: x + scanerDimensions.width, y },
+		{ x, y }
+	];
+
+	let overlayCanvas = document.createElement('canvas');
+	overlayCanvas.width = canvasDimensions.width;
+	overlayCanvas.height = canvasDimensions.height;
+
+	let context = overlayCanvas.getContext("2d");
+
+	context.beginPath();
+
+	context.moveTo(backgroundPoints[0].x, backgroundPoints[0].y);
+	for (let i = 0; i < 4; i++) {
+		context.lineTo(backgroundPoints[i].x, backgroundPoints[i].y);
+	}
+
+	context.moveTo(holePoints[0].x, holePoints[0].y);
+	for (let i = 0; i < 4; i++) {
+		context.lineTo(holePoints[i].x, holePoints[i].y);
+	}
+
+	context.closePath();
+
+	context.fillStyle = 'rgba(0, 0, 0, 0.5)'
+	context.fill();
+
+	context.lineWidth = 3;
+	context.strokeStyle = 'rgb(0, 0, 0)';
+	context.strokeRect(...scannerArea);
+
+	return overlayCanvas;
+}
+
+async function timeout(time = 0) {
+	return new Promise((resolve) => {
+		const id = setTimeout(() => {
+			clearTimeout(id)
+			resolve();
+		}, time)
+	});
+}
+
+export default Scanner;
+export { SCANNER_FORMATS };
